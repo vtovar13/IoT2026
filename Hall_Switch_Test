@@ -1,0 +1,27 @@
+import RPi.GPIO as GPIO
+import time
+
+HALL_PIN = 17
+DEBOUNCE_TIME = 0.8  # seconds
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(HALL_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+last_trigger = 0
+page_count = 0
+
+def page_turn(channel):
+    global last_trigger, page_count
+    now = time.time()
+    if now - last_trigger > DEBOUNCE_TIME:
+        page_count += 1
+        print("Page Turn:", page_count)
+        last_trigger = now
+
+GPIO.add_event_detect(HALL_PIN, GPIO.FALLING, callback=page_turn)
+
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    GPIO.cleanup()
