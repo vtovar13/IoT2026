@@ -1,0 +1,183 @@
+
+import os
+import time
+import smtplib
+from email.message import EmailMessage
+from datetime import datetime
+import RPi.GPIO as GPIO
+
+# -----------------------
+# USER: EDIT THESE
+# -----------------------
+SENDER_EMAIL = "YOUR_GMAIL_HERE@gmail.com"
+RECIPIENT_EMAIL = "RECIPIENT_EMAIL_HERE@gmail.com"  # can be same as sender
+
+# -----------------------
+# IR SENSOR SETTINGS
+# -----------------------
+IR_PIN = 17                 # GPIO17 (physical pin 11)
+DETECTED_LEVEL = 0          # many IR modules go LOW when they "detect"
+DEBOUNCE_SEC = 0.50         # increase if over-counting
+SESSION_END_INACTIVITY = 30 # seconds of no flips => end session
+MIN_SESSION_SEC = 5         # ignore tiny accidental sessions
+
+# -----------------------
+# EMAIL SETTINGS (Gmail)
+# -----------------------
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_SUBJECT = "Reading Session Summary (IR Sensor)"
+
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+
+# -----------------------
+# HELPERS
+# -----------------------
+def format_duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+def safe_div(a: float, b: float) -> float:
+    return a / b if b != 0 else 0.0
+
+def build_email(pages: int, duration_sec: float) -> str:
+    minutes = duration_sec / 60.0
+    hours = duration_sec / 3600.0
+
+    speed_ppm = safe_div(pages, minutes)     # pages per minute
+    speed_pph = safe_div(pages, hours)       # pages per hour
+    sec_per_page = safe_div(duration_sec, pages)
+
+    proj_15 = speed_ppm * 15
+    proj_30 = speed_ppm * 30
+    proj_60 = speed_ppm * 60
+
+    ended_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    return f"""\
+PHYSICAL BOOK READING TRACKER 📖 (IR Sensor)
+-------------------------------------------
+
+Session ended:      {ended_at}
+Session length:     {format_duration(duration_sec)}
+Pages flipped:      {pages}
+
+Average pace:
+- {speed_ppm:.2f} pages/min
+- {speed_pph:.1f} pages/hour
+- {sec_per_page:.1f} sec/page
+
+Projections (if you keep this pace):
+- 15 min: ~{proj_15:.1f} pages
+- 30 min: ~{proj_30:.1f} pages
+- 60 min: ~{proj_60:.1f} pages
+
+How “book closed” is detected:
+- Session ends when no page flips are detected for {SESSION_END_INACTIVITY} seconds.
+
+Notes:
+- Pages are counted from IR events (debounced at {DEBOUNCE_SEC:.2f}s).
+"""
+
+def send_email(subject: str, body: str) -> None:
+    if not GMAIL_APP_PASSWORD:
+        raise RuntimeError(
+            "GMAIL_APP_PASSWORD not set. In terminal run: source ~/.bashrc "
+            "(or launch Thonny from terminal after sourcing)."
+        )
+
+    msg = EmailMessage()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECIPIENT_EMAIL
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(SENDER_EMAIL, GMAIL_APP_PASSWORD)
+        server.send_message(msg)
+
+# -----------------------
+# MAIN
+# -----------------------
+def main():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(IR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    print("📖 IR reading tracker running.")
+    print("Waiting for first page flip... Ctrl+C to stop.\n")
+
+    session_active = False
+    session_start = None
+    last_flip_time = None
+    pages = 0
+
+    prev_state = GPIO.input(IR_PIN)
+    last_counted_time = 0.0
+
+    try:
+        while True:
+            state = GPIO.input(IR_PIN)
+            now = time.time()
+
+            # Count on transition into DETECTED_LEVEL
+            if state != prev_state:
+                if state == DETECTED_LEVEL:
+                    if (now - last_counted_time) >= DEBOUNCE_SEC:
+                        last_counted_time = now
+
+                        if not session_active:
+                            session_active = True
+                            session_start = now
+                            pages = 0
+                            print("✅ Session started!")
+
+                        pages += 1
+                        last_flip_time = now
+                        print(f"Flip detected → pages counted: {pages}")
+
+                prev_state = state
+
+            # End session after inactivity
+            if session_active and last_flip_time is not None:
+                if (now - last_flip_time) >= SESSION_END_INACTIVITY:
+                    duration = now - session_start
+
+                    if duration >= MIN_SESSION_SEC:
+                        body = build_email(pages, duration)
+                        print("\n" + body)
+
+                        try:
+                            send_email(EMAIL_SUBJECT, body)
+                            print("✅ Email sent.\n")
+                        except Exception as e:
+                            print(f"❌ Email failed: {e}\n")
+                    else:
+                        print("Session ignored (too short).")
+
+                    # reset
+                    session_active = False
+                    session_start = None
+                    last_flip_time = None
+                    pages = 0
+                    print("Waiting for next session...\n")
+
+            time.sleep(0.01)
+
+    except KeyboardInterrupt:
+        print("\nStopping...")
+
+    finally:
+        GPIO.cleanup()
+
+if __name__ == "__main__":
+    main()
