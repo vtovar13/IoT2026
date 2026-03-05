@@ -6,9 +6,7 @@ from email.message import EmailMessage
 from datetime import datetime
 import RPi.GPIO as GPIO
 
-# -----------------------
-# USER: EDIT THESE
-# -----------------------
+# Email inputs 
 SENDER_EMAIL = "YOUR_GMAIL_HERE@gmail.com"
 RECIPIENT_EMAIL = "RECIPIENT_EMAIL_HERE@gmail.com"  # can be same as sender
 
